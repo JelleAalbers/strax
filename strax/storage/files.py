@@ -1,10 +1,10 @@
 import glob
 import json
-import tempfile
 import os
 import os.path as osp
 
 from bson import json_util
+import numpy as np
 import shutil
 
 import strax
@@ -229,7 +229,11 @@ class FileSytemBackend(strax.StorageBackend):
 
     def _read_chunk(self, dirname, chunk_info, dtype, compressor):
         fn = osp.join(dirname, chunk_info['filename'])
-        return strax.load_file(fn, dtype=dtype, compressor=compressor)
+        data = strax.load_file(fn, dtype=dtype, compressor=compressor)
+        if 'row_range' in chunk_info:
+            return data[chunk_info['row_range'][0]
+                        :chunk_info['row_range'][1]]
+        return data
 
     def _saver(self, dirname, metadata):
         # Test if the parent directory is writeable.
@@ -256,18 +260,45 @@ class FileSytemBackend(strax.StorageBackend):
 
         return FileSaver(dirname, metadata=metadata)
 
+    def pack_dir(self, dirname, out_dir=None, chunks_per_file=3):
+        metadata = self.get_metadata(dirname)
+        loader = self.loader(dirname)
+
+        if out_dir is None:
+            tempdir = dirname + '_temp'
+        else:
+            tempdir = out_dir
+        os.makedirs(tempdir)
+        saver = FileSaver(dirname=tempdir,
+                          metadata=metadata,
+                          chunks_per_file=chunks_per_file)
+
+        saver.save_from(loader, rechunk=False)
+        print(os.listdir(tempdir))
+
+        if out_dir is None:
+            shutil.rmtree(dirname)
+            os.rename(tempdir, dirname)
+
 
 @export
 class FileSaver(strax.Saver):
     """Saves data to compressed binary files"""
     json_options = dict(sort_keys=True, indent=4)
 
-    def __init__(self, dirname, metadata):
+    def __init__(self, dirname, metadata, chunks_per_file=1):
         super().__init__(metadata)
         self.dirname = dirname
         self.tempdirname = dirname + '_temp'
         self.prefix = dirname_to_prefix(dirname)
         self.metadata_json = f'{self.prefix}-metadata.json'
+
+        # Multi-chunk file support
+        self.chunks_per_file = chunks_per_file
+        self.chunks_to_join = []
+        self.cached_rows = 0
+        self.last_filename = None
+        self.allow_fork = chunks_per_file == 1
 
         if os.path.exists(dirname):
             print(f"Removing data in {dirname} to overwrite")
@@ -285,25 +316,55 @@ class FileSaver(strax.Saver):
     def _chunk_filename(self, chunk_info):
         if 'filename' in chunk_info:
             return chunk_info['filename']
-        ichunk = '%06d' % chunk_info['chunk_i']
+        ichunk = '%06d' % (chunk_info['chunk_i'] // self.chunks_per_file)
         return f'{self.prefix}-{ichunk}'
 
     def _save_chunk(self, data, chunk_info, executor=None):
-        filename = self._chunk_filename(chunk_info)
+        filename = self.last_filename = self._chunk_filename(chunk_info)
 
+        if self.chunks_per_file == 1:
+            return self._write_chunk(data, filename, executor)
+        else:
+            row_range = (self.cached_rows,
+                         self.cached_rows + chunk_info['n'])
+            self.chunks_to_join.append(data)
+            self.cached_rows += len(data)
+            if len(self.chunks_to_join) == self.chunks_per_file:
+                extra_info, future = self._flush_cached_chunks(executor)
+            else:
+                extra_info, future = dict(), None
+            return dict(row_range=row_range, **extra_info), future
+
+    def _flush_cached_chunks(self, executor=None):
+        assert self.chunks_per_file > 1
+        if not self.chunks_to_join:
+            return
+        assert self.last_filename is not None, "Saving data with no chunks??"
+
+        result = self._write_chunk(data=np.concatenate(self.chunks_to_join),
+                                   filename=self.last_filename,
+                                   executor=executor)
+
+        self.cached_rows = 0
+        self.chunks_to_join = []
+        return result
+
+    def _write_chunk(self, data, filename, executor=None):
         fn = os.path.join(self.tempdirname, filename)
         kwargs = dict(data=data, compressor=self.md['compressor'])
         if executor is None:
             filesize = strax.save_file(fn, **kwargs)
-            return dict(filename=filename, filesize=filesize), None
+            return dict(filesize=filesize), None
         else:
-            return dict(filename=filename), executor.submit(
+            return dict(), executor.submit(
                 strax.save_file, fn, **kwargs)
 
     def _save_chunk_metadata(self, chunk_info):
         is_first = chunk_info['chunk_i'] == 0
         if is_first:
             self.md['start'] = chunk_info['start']
+
+        chunk_info['filename'] = self._chunk_filename(chunk_info)
 
         if self.is_forked:
             # Do not write to the main metadata file to avoid race conditions
@@ -346,6 +407,8 @@ class FileSaver(strax.Saver):
             os.remove(fn)
 
         self._flush_metadata()
+        if self.chunks_per_file > 1:
+            self._flush_cached_chunks()
 
         os.rename(self.tempdirname, self.dirname)
 

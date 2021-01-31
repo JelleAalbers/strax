@@ -88,6 +88,50 @@ def test_filestore():
         assert metadata == metadata_2
 
 
+def test_multichunk_file():
+    """Test FileStore's support of multichunk files"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        st = strax.Context(storage=strax.DataDirectory(temp_dir,
+                                                       deep_scan=True),
+                           register=[Records])
+
+        Records.rechunk_on_save = False   # TEMP HACK!
+
+        records = st.get_array(run_id, 'records')
+        meta = st.get_meta(run_id, 'records')
+
+        peak_dir = st.storage[0].find(st.key_for(run_id, 'records'))[1]
+        assert os.path.exists(peak_dir)
+        assert st.is_stored(run_id, 'records')
+        n_chunks = len(meta['chunks'])
+        assert n_chunks > 2, "Can't test properly if you make just one chunk"
+
+        chunks_per_file = 3
+        strax.FileSytemBackend().pack_dir(peak_dir,
+                                          chunks_per_file=chunks_per_file)
+
+        # Data is still there
+        assert os.path.exists(peak_dir), "Data is gone"
+        assert st.is_stored(run_id, 'records'), "Strax can't find data"
+
+        # .. and unchanged
+        new_recs = st.get_array(run_id, 'records')
+        assert len(new_recs) == len(records), "Data mangled"
+        assert np.all(new_recs == records), "Data mangled"
+
+        # Chunks are still there
+        new_meta = st.get_meta(run_id, 'records')
+        print(new_meta)
+        assert all(['row_range' in x for x in new_meta['chunks']])
+        assert len(meta['chunks']) == n_chunks
+
+        # .. but stored in fewer files
+        new_n = len(os.listdir(peak_dir)) - 1   # Skip metadata json
+        assert new_n == int(np.ceil(n_chunks / chunks_per_file)), 'Didnt pack'
+
+    Records.rechunk_on_save = True  # TEMP HACK!
+
+
 def test_datadirectory_deleted():
     """Test deleting the data directory does not cause crashes
     or silent failures to save (#93)
