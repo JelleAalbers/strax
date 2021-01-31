@@ -95,8 +95,6 @@ def test_multichunk_file():
                                                        deep_scan=True),
                            register=[Records])
 
-        Records.rechunk_on_save = False   # TEMP HACK!
-
         records = st.get_array(run_id, 'records')
         meta = st.get_meta(run_id, 'records')
 
@@ -128,8 +126,6 @@ def test_multichunk_file():
         # .. but stored in fewer files
         new_n = len(os.listdir(peak_dir)) - 1   # Skip metadata json
         assert new_n == int(np.ceil(n_chunks / chunks_per_file)), 'Didnt pack'
-
-    Records.rechunk_on_save = True  # TEMP HACK!
 
 
 def test_datadirectory_deleted():

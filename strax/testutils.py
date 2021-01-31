@@ -148,6 +148,8 @@ class Records(strax.Plugin):
     depends_on = tuple()
     dtype = strax.record_dtype()
 
+    rechunk_on_save = False
+
     def source_finished(self):
         return True
 

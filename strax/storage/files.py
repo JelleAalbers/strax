@@ -274,7 +274,6 @@ class FileSytemBackend(strax.StorageBackend):
                           chunks_per_file=chunks_per_file)
 
         saver.save_from(loader, rechunk=False)
-        print(os.listdir(tempdir))
 
         if out_dir is None:
             shutil.rmtree(dirname)
