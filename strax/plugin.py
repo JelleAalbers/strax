@@ -386,9 +386,17 @@ class Plugin:
                     **inputs_merged)
                 pending_futures.append(new_future)
                 pending_futures = [f for f in pending_futures if not f.done()]
-                yield new_future
+                to_yield = new_future
             else:
-                yield self.do_compute(chunk_i=chunk_i, **inputs_merged)
+                to_yield = self.do_compute(chunk_i=chunk_i, **inputs_merged)
+
+            try:
+                yield to_yield
+            except Exception:
+                # Sender has .throw()'n an exception in rather than asking
+                # for another message
+                self.cleanup(iters, wait_for=pending_futures)
+                raise
 
         raise RuntimeError("This cannot happen.")
 

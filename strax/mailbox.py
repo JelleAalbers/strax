@@ -259,6 +259,12 @@ class Mailbox:
                 i += 1
 
         except Exception as e:
+            # Try to inform the source in case it wants to clean up.
+            # Do not care how it responds, we are going down anyway.
+            try:
+                iterable.throw(e)
+            except Exception:
+                pass
             self.kill_from_exception(e)
         else:
             self.log.debug("Producing iterable exhausted, regular stop")
@@ -495,6 +501,14 @@ def divide_outputs(source,
     except Exception as e:
         for m in mbs_to_kill:
             m.kill_from_exception(e, reraise=False)
+
+        # Try to inform the source in case it wants to clean up.
+        # Do not care how it responds, we are going down anyway.
+        try:
+            source.throw(e)
+        except Exception:
+            pass
+
         if not isinstance(e, MailboxKilled):
             raise
     else:
